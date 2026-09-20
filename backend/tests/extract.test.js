@@ -42,13 +42,18 @@ test('parseJsonLoose throws BadOutputError on garbage or empty input', () => {
   }
 });
 
-test('cleanTopics trims, dedupes case-insensitively, accepts {name} objects, and caps the count', () => {
+test('cleanTopics trims, dedupes case-insensitively, accepts {name} objects, and never truncates', () => {
   assert.deepEqual(cleanTopics(['  Arrays  ', 'arrays', 'Linked   Lists', { name: 'Trees' }, '', 5, null]), [
     'Arrays',
     'Linked Lists',
     'Trees',
   ]);
-  assert.equal(cleanTopics(Array.from({ length: 100 }, (_, i) => `Topic ${i}`)).length, 40);
+  const topics = (n) => Array.from({ length: n }, (_, i) => `Topic ${i}`);
+  assert.equal(cleanTopics(topics(50)).length, 50); // exactly the maximum is fine
+  // Over the maximum is an error the model must fix by merging; silently cutting the list would drop the
+  // END of the syllabus (a real bug found with the live model on a long syllabus).
+  assert.throws(() => cleanTopics(topics(51)), /maximum is 50.*Merge related sub-topics/);
+  assert.throws(() => cleanTopics(topics(51)), BadOutputError);
   assert.deepEqual(cleanTopics([]), []); // "no topics" is a valid answer
   assert.throws(() => cleanTopics({ topics: [] }), BadOutputError);
   assert.throws(() => cleanTopics([1, 2, null]), BadOutputError);
@@ -94,6 +99,28 @@ test('extract retries once when the first reply is not valid JSON, telling the m
   const retryMessages = mock.calls[1].messages;
   assert.equal(retryMessages.length, 4); // system, user, bad assistant reply, correction
   assert.equal(retryMessages[2].content, 'I could not do that, sorry');
+});
+
+test('an over-long topic list is sent back to the model to merge, and nothing is truncated', async () => {
+  const planId = await newPlan(alice);
+  const tooMany = JSON.stringify(Array.from({ length: 70 }, (_, i) => `Fine-grained ${i}`));
+  const merged = JSON.stringify(Array.from({ length: 30 }, (_, i) => `Merged ${i}`));
+  mock = mockLlm([tooMany, merged]);
+  const res = await alice.request('POST', `/plans/${planId}/extract`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.topics.length, 30);
+  assert.equal(mock.calls.length, 2);
+  assert.match(mock.calls[1].messages[3].content, /70 topics but the maximum is 50.*Merge/s);
+});
+
+test('if the list is still too long after the retry: 502 and existing topics are kept (never a truncated list)', async () => {
+  const planId = await newPlan(alice);
+  await Topic.create({ planId, name: 'Existing topic' });
+  mock = mockLlm([JSON.stringify(Array.from({ length: 70 }, (_, i) => `T${i}`))]);
+  const res = await alice.request('POST', `/plans/${planId}/extract`);
+  assert.equal(res.status, 502);
+  assert.equal(mock.calls.length, 2);
+  assert.deepEqual((await Topic.find({ planId })).map((t) => t.name), ['Existing topic']);
 });
 
 test('extract retries when the reply is JSON of the wrong shape', async () => {
