@@ -1,0 +1,8 @@
+node_modules/
+.env
+CLAUDE.md
+study-notes/
+bugs-encountered/
+deployment.md
+dist/
+.DS_Store
