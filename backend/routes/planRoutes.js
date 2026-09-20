@@ -6,6 +6,7 @@ const {
   deletePlan,
   extractPlanTopics,
   estimatePlanTopics,
+  generatePlanSchedule,
 } = require('../controllers/planController');
 const requireAuth = require('../middlewares/authMiddleware');
 const loadOwnedPlan = require('../middlewares/loadPlan');
@@ -20,5 +21,6 @@ router.get('/:id', loadOwnedPlan, getPlan);
 router.delete('/:id', loadOwnedPlan, deletePlan);
 router.post('/:id/extract', loadOwnedPlan, extractPlanTopics);
 router.post('/:id/estimate', loadOwnedPlan, estimatePlanTopics);
+router.post('/:id/generate', loadOwnedPlan, generatePlanSchedule);
 
 module.exports = router;

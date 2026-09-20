@@ -3,6 +3,7 @@ const Topic = require('../model/topicSchema');
 const ScheduleDay = require('../model/scheduleDaySchema');
 const { extractTopics } = require('../service/agents/extractorAgent');
 const { estimateTopics } = require('../service/agents/estimatorAgent');
+const { scheduleTopics } = require('../service/agents/scheduler');
 
 const MAX_SYLLABUS_CHARS = 20000;
 const PREVIEW_CHARS = 120;
@@ -63,7 +64,26 @@ async function getPlan(req, res) {
     Topic.find({ planId: req.plan._id }).sort({ _id: 1 }).lean(),
     ScheduleDay.find({ planId: req.plan._id }).sort({ date: 1 }).lean(),
   ]);
-  return res.json({ plan: { ...req.plan.toObject(), topics, scheduleDays } });
+  return res.json({
+    plan: { ...req.plan.toObject(), topics, scheduleDays, unscheduledTopicIds: findUnscheduled(topics, scheduleDays) },
+  });
+}
+
+// Topics still to do whose planned hours don't add up to their estimate (i.e. they didn't fit before the exam).
+// Only meaningful once a schedule exists.
+function findUnscheduled(topics, scheduleDays) {
+  if (scheduleDays.length === 0) return [];
+  const planned = new Map();
+  for (const day of scheduleDays) {
+    for (const slot of day.slots || []) {
+      const key = slot.topicId.toString();
+      planned.set(key, (planned.get(key) || 0) + slot.hours);
+    }
+  }
+  return topics
+    .filter((t) => t.status !== 'done' && t.estHours != null)
+    .filter((t) => (planned.get(t._id.toString()) || 0) < t.estHours - 1e-6)
+    .map((t) => t._id);
 }
 
 async function deletePlan(req, res) {
@@ -125,4 +145,54 @@ async function estimatePlanTopics(req, res) {
   return res.json({ topics: updated });
 }
 
-module.exports = { createPlan, listPlans, getPlan, deletePlan, extractPlanTopics, estimatePlanTopics };
+// Runs the deterministic scheduler (no LLM) over the plan's not-yet-done topics and saves the days.
+async function generatePlanSchedule(req, res) {
+  const topics = await Topic.find({ planId: req.plan._id }).sort({ _id: 1 });
+  if (topics.length === 0) {
+    return res.status(400).json({ error: 'This plan has no topics yet. Extract topics first.' });
+  }
+  const todo = topics.filter((t) => t.status !== 'done');
+  if (todo.length === 0) {
+    return res.status(400).json({ error: 'All topics are already done. Nothing to schedule.' });
+  }
+  if (todo.some((t) => t.difficulty == null || t.estHours == null)) {
+    return res.status(400).json({ error: 'Some topics have no estimate yet. Estimate difficulty first.' });
+  }
+
+  let result;
+  try {
+    result = scheduleTopics(
+      todo.map((t) => ({ id: t._id, difficulty: t.difficulty, estHours: t.estHours })),
+      req.plan.examDate,
+      req.plan.dailyHours
+    );
+  } catch (err) {
+    if (err instanceof RangeError) {
+      return res.status(400).json({ error: 'The exam date is today or has passed, so there are no days left to schedule.' });
+    }
+    throw err;
+  }
+
+  await ScheduleDay.deleteMany({ planId: req.plan._id });
+  const scheduleDays = await ScheduleDay.insertMany(
+    result.days.map((d) => ({ planId: req.plan._id, date: d.date, topicIds: d.topicIds, slots: d.slots }))
+  );
+  req.plan.status = 'active';
+  await req.plan.save();
+
+  return res.json({
+    scheduleDays,
+    warning: result.warning,
+    unscheduledTopicIds: result.unscheduled.map((u) => u.topicId),
+  });
+}
+
+module.exports = {
+  createPlan,
+  listPlans,
+  getPlan,
+  deletePlan,
+  extractPlanTopics,
+  estimatePlanTopics,
+  generatePlanSchedule,
+};
