@@ -69,7 +69,7 @@ npm install
 npm run dev               # http://localhost:5173
 ```
 
-The dev server proxies `/api/*` to the backend on port 5000, so no CORS or cookie setup is needed locally. Open http://localhost:5173, sign up, create a plan and press **Build my plan**.
+The dev server proxies `/api/*` to the backend on port 5000, so no CORS or cookie setup is needed locally. (If port 5000 or 5173 is already used by another app, change `PORT` in `backend/.env` and the proxy `target` in `frontend/vite.config.js` to match.) Open http://localhost:5173, sign up, create a plan and press **Build my plan**.
 
 ## Tests
 
