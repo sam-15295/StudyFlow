@@ -1,122 +1,52 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState } from 'react'
+import * as api from './api.js'
+import { navigate, useRoute } from './router.js'
+import Button from './components/Button.jsx'
+import AuthPage from './pages/AuthPage.jsx'
+import Dashboard from './pages/Dashboard.jsx'
+import NewPlan from './pages/NewPlan.jsx'
+import PlanView from './pages/PlanView.jsx'
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const route = useRoute()
+  const [user, setUser] = useState(undefined) // undefined = still checking the session, null = logged out
+
+  // Restore the session from the httpOnly cookie; nothing about the user is stored client-side.
+  useEffect(() => {
+    api
+      .me()
+      .then((data) => setUser(data.user))
+      .catch(() => setUser(null))
+  }, [])
+
+  // api.js fires this when a data request comes back 401 (session expired).
+  useEffect(() => {
+    const onExpired = () => setUser(null)
+    window.addEventListener('auth:expired', onExpired)
+    return () => window.removeEventListener('auth:expired', onExpired)
+  }, [])
+
+  async function handleLogout() {
+    await api.logout().catch(() => {})
+    setUser(null)
+    navigate('/')
+  }
+
+  if (user === undefined) return <p className="muted centered">Loading…</p>
+  if (user === null) return <AuthPage onAuth={setUser} />
 
   return (
     <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
+      <nav className="nav">
+        <a className="brand" href="#/">StudyFlow</a>
+        <span className="muted nav-email">{user.email}</span>
+        <Button variant="secondary" onClick={handleLogout}>Log out</Button>
+      </nav>
+      <main className="container">
+        {route.name === 'new' && <NewPlan />}
+        {route.name === 'plan' && <PlanView key={route.id} id={route.id} />}
+        {route.name === 'dashboard' && <Dashboard />}
+      </main>
     </>
   )
 }
-
-export default App
