@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const authRoutes = require('./routes/authRoutes');
+const planRoutes = require('./routes/planRoutes');
 
 const app = express();
 
@@ -14,6 +15,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/auth', authRoutes);
+app.use('/plans', planRoutes);
 
 // Malformed JSON bodies -> 400; anything else -> 500 (logged, not leaked).
 app.use((err, req, res, next) => {

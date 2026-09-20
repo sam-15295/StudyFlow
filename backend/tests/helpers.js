@@ -66,4 +66,19 @@ function createClient(baseUrl) {
   };
 }
 
-module.exports = { startTestServer, createClient };
+// A client that is already signed up and logged in.
+async function createLoggedInClient(baseUrl, email) {
+  const client = createClient(baseUrl);
+  const res = await client.request('POST', '/auth/signup', { email, password: 'password123' });
+  if (res.status !== 201) throw new Error(`test signup failed: ${res.status}`);
+  return client;
+}
+
+// "YYYY-MM-DD" for N days from today (UTC), matching how the API reads dates.
+function dateFromToday(days) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+module.exports = { startTestServer, createClient, createLoggedInClient, dateFromToday };

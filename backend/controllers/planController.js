@@ -1,0 +1,76 @@
+const Plan = require('../model/planSchema');
+const Topic = require('../model/topicSchema');
+const ScheduleDay = require('../model/scheduleDaySchema');
+
+const MAX_SYLLABUS_CHARS = 20000;
+const PREVIEW_CHARS = 120;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function todayUtc() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+// examDate is a plain calendar date ("YYYY-MM-DD"), stored as UTC midnight.
+function parseExamDate(value) {
+  if (typeof value !== 'string' || !DATE_RE.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value ? null : date;
+}
+
+async function createPlan(req, res) {
+  const { syllabusRaw, examDate, dailyHours } = req.body || {};
+
+  if (typeof syllabusRaw !== 'string' || !syllabusRaw.trim()) {
+    return res.status(400).json({ error: 'syllabusRaw is required' });
+  }
+  if (syllabusRaw.length > MAX_SYLLABUS_CHARS) {
+    return res.status(400).json({ error: `syllabusRaw must be at most ${MAX_SYLLABUS_CHARS} characters` });
+  }
+  const exam = parseExamDate(examDate);
+  if (!exam) {
+    return res.status(400).json({ error: 'examDate must be a valid date in YYYY-MM-DD format' });
+  }
+  if (exam <= todayUtc()) {
+    return res.status(400).json({ error: 'examDate must be in the future' });
+  }
+  if (typeof dailyHours !== 'number' || !Number.isFinite(dailyHours) || dailyHours < 0.25 || dailyHours > 24) {
+    return res.status(400).json({ error: 'dailyHours must be a number between 0.25 and 24' });
+  }
+
+  const plan = await Plan.create({
+    userId: req.user.id,
+    examDate: exam,
+    dailyHours,
+    syllabusRaw: syllabusRaw.trim(),
+  });
+  return res.status(201).json({ plan });
+}
+
+async function listPlans(req, res) {
+  const plans = await Plan.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean();
+  const summaries = plans.map(({ syllabusRaw, ...rest }) => ({
+    ...rest,
+    syllabusPreview: syllabusRaw.slice(0, PREVIEW_CHARS),
+  }));
+  return res.json({ plans: summaries });
+}
+
+async function getPlan(req, res) {
+  const [topics, scheduleDays] = await Promise.all([
+    Topic.find({ planId: req.plan._id }).sort({ _id: 1 }).lean(),
+    ScheduleDay.find({ planId: req.plan._id }).sort({ date: 1 }).lean(),
+  ]);
+  return res.json({ plan: { ...req.plan.toObject(), topics, scheduleDays } });
+}
+
+async function deletePlan(req, res) {
+  await Promise.all([
+    Topic.deleteMany({ planId: req.plan._id }),
+    ScheduleDay.deleteMany({ planId: req.plan._id }),
+  ]);
+  await req.plan.deleteOne();
+  return res.json({ message: 'Plan deleted' });
+}
+
+module.exports = { createPlan, listPlans, getPlan, deletePlan };
