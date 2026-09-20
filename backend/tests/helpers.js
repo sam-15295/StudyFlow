@@ -1,10 +1,16 @@
 // Test helpers: boots the real Express app against a throwaway test database
 // (never the dev database) and provides a tiny cookie-aware HTTP client.
 process.env.MONGO_URI = 'mongodb://localhost:27017/StudyFlow_test';
-require('dotenv').config(); // fills JWT_SECRET etc.; does not override MONGO_URI set above
+// Tests must never spend the real OpenRouter key/model: dotenv below does not override these.
+process.env.OPENROUTER_API_KEY = 'test-key';
+process.env.LLM_MODEL = 'test/model:free';
+require('dotenv').config({ quiet: true }); // fills JWT_SECRET etc.
 
 const mongoose = require('mongoose');
 const app = require('../app');
+const llm = require('../service/llm');
+
+llm.config.retryDelayMs = 0; // don't wait between LLM retries in tests
 
 async function startTestServer() {
   await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 10000 });
@@ -81,4 +87,31 @@ function dateFromToday(days) {
   return d.toISOString().slice(0, 10);
 }
 
-module.exports = { startTestServer, createClient, createLoggedInClient, dateFromToday };
+/**
+ * Replaces fetch for OpenRouter calls only (requests to the test server pass through).
+ * Each step answers one LLM call; the last step repeats if more calls are made:
+ *   'text'                 -> 200 with that message content
+ *   { status: 429 }        -> that HTTP status with an empty body
+ *   { body: {...} }        -> 200 with that raw JSON body
+ *   new Error('...')       -> fetch itself throws (network failure)
+ * Returns { calls, restore } where calls holds every parsed request body.
+ */
+function mockLlm(steps) {
+  const realFetch = global.fetch;
+  const calls = [];
+  let i = 0;
+  global.fetch = async (url, opts) => {
+    if (!String(url).startsWith('https://openrouter.ai')) return realFetch(url, opts);
+    calls.push(JSON.parse(opts.body));
+    const step = steps[Math.min(i++, steps.length - 1)];
+    if (step instanceof Error) throw step;
+    if (typeof step === 'string') {
+      return new Response(JSON.stringify({ choices: [{ message: { content: step } }] }), { status: 200 });
+    }
+    if (step.body) return new Response(JSON.stringify(step.body), { status: 200 });
+    return new Response('{}', { status: step.status });
+  };
+  return { calls, restore: () => (global.fetch = realFetch) };
+}
+
+module.exports = { startTestServer, createClient, createLoggedInClient, dateFromToday, mockLlm };

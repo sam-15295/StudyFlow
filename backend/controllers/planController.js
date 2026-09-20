@@ -1,6 +1,7 @@
 const Plan = require('../model/planSchema');
 const Topic = require('../model/topicSchema');
 const ScheduleDay = require('../model/scheduleDaySchema');
+const { extractTopics } = require('../service/agents/extractorAgent');
 
 const MAX_SYLLABUS_CHARS = 20000;
 const PREVIEW_CHARS = 120;
@@ -73,4 +74,26 @@ async function deletePlan(req, res) {
   return res.json({ message: 'Plan deleted' });
 }
 
-module.exports = { createPlan, listPlans, getPlan, deletePlan };
+// Runs the Topic Extractor Agent. Re-running replaces the plan's topics (and its now-stale schedule).
+async function extractPlanTopics(req, res) {
+  const names = await extractTopics(req.plan.syllabusRaw);
+  if (names.length === 0) {
+    return res.status(422).json({
+      error: 'No study topics could be found in the syllabus. Try pasting more detailed text.',
+    });
+  }
+
+  // Only touch existing data once the LLM call has succeeded, so a failure never loses topics.
+  await Promise.all([
+    Topic.deleteMany({ planId: req.plan._id }),
+    ScheduleDay.deleteMany({ planId: req.plan._id }),
+  ]);
+  const topics = await Topic.insertMany(names.map((name) => ({ planId: req.plan._id, name })));
+  if (req.plan.status !== 'draft') {
+    req.plan.status = 'draft';
+    await req.plan.save();
+  }
+  return res.json({ topics });
+}
+
+module.exports = { createPlan, listPlans, getPlan, deletePlan, extractPlanTopics };
