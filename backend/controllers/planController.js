@@ -2,6 +2,7 @@ const Plan = require('../model/planSchema');
 const Topic = require('../model/topicSchema');
 const ScheduleDay = require('../model/scheduleDaySchema');
 const { extractTopics } = require('../service/agents/extractorAgent');
+const { estimateTopics } = require('../service/agents/estimatorAgent');
 
 const MAX_SYLLABUS_CHARS = 20000;
 const PREVIEW_CHARS = 120;
@@ -96,4 +97,32 @@ async function extractPlanTopics(req, res) {
   return res.json({ topics });
 }
 
-module.exports = { createPlan, listPlans, getPlan, deletePlan, extractPlanTopics };
+// Runs the Difficulty Estimator Agent over the plan's topics (one batched LLM call).
+async function estimatePlanTopics(req, res) {
+  const topics = await Topic.find({ planId: req.plan._id }).sort({ _id: 1 });
+  if (topics.length === 0) {
+    return res.status(400).json({ error: 'This plan has no topics yet. Extract topics first.' });
+  }
+
+  const estimates = await estimateTopics(topics.map((t) => t.name)); // same order as `topics`
+  await Topic.bulkWrite(
+    topics.map((topic, i) => ({
+      updateOne: {
+        filter: { _id: topic._id },
+        update: { $set: { difficulty: estimates[i].difficulty, estHours: estimates[i].estHours } },
+      },
+    }))
+  );
+
+  // New estimates make any existing schedule stale, so drop it and go back to draft.
+  await ScheduleDay.deleteMany({ planId: req.plan._id });
+  if (req.plan.status !== 'draft') {
+    req.plan.status = 'draft';
+    await req.plan.save();
+  }
+
+  const updated = await Topic.find({ planId: req.plan._id }).sort({ _id: 1 });
+  return res.json({ topics: updated });
+}
+
+module.exports = { createPlan, listPlans, getPlan, deletePlan, extractPlanTopics, estimatePlanTopics };
