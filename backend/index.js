@@ -1,13 +1,11 @@
 require('dotenv').config();
-const express = require('express');
+const app = require('./app');
 const connectDB = require('./config/db');
 
-const app = express();
-app.use(express.json());
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
-});
+if (!process.env.JWT_SECRET) {
+  console.error('Failed to start server: JWT_SECRET is not set');
+  process.exit(1);
+}
 
 const PORT = process.env.PORT || 5000;
 
