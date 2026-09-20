@@ -91,7 +91,7 @@ function dateFromToday(days) {
  * Replaces fetch for OpenRouter calls only (requests to the test server pass through).
  * Each step answers one LLM call; the last step repeats if more calls are made:
  *   'text'                 -> 200 with that message content
- *   { status: 429 }        -> that HTTP status with an empty body
+ *   { status: 429 }        -> that HTTP status with an empty body (or { status, text } for a body)
  *   { body: {...} }        -> 200 with that raw JSON body
  *   new Error('...')       -> fetch itself throws (network failure)
  * Returns { calls, restore } where calls holds every parsed request body.
@@ -109,7 +109,7 @@ function mockLlm(steps) {
       return new Response(JSON.stringify({ choices: [{ message: { content: step } }] }), { status: 200 });
     }
     if (step.body) return new Response(JSON.stringify(step.body), { status: 200 });
-    return new Response('{}', { status: step.status });
+    return new Response(step.text || '{}', { status: step.status });
   };
   return { calls, restore: () => (global.fetch = realFetch) };
 }

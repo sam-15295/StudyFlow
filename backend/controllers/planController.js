@@ -1,9 +1,13 @@
+const mongoose = require('mongoose');
 const Plan = require('../model/planSchema');
 const Topic = require('../model/topicSchema');
 const ScheduleDay = require('../model/scheduleDaySchema');
 const { extractTopics } = require('../service/agents/extractorAgent');
 const { estimateTopics } = require('../service/agents/estimatorAgent');
-const { scheduleTopics } = require('../service/agents/scheduler');
+const { scheduleTopics, startOfUtcDay } = require('../service/agents/scheduler');
+const { explainReplan, fallbackExplanation } = require('../service/agents/replanExplainer');
+const { decideReplan, replanRemaining, syncDayCompletion } = require('../service/replan');
+const { LlmError } = require('../service/llm');
 
 const MAX_SYLLABUS_CHARS = 20000;
 const PREVIEW_CHARS = 120;
@@ -187,6 +191,82 @@ async function generatePlanSchedule(req, res) {
   });
 }
 
+const TOPIC_STATUSES = ['pending', 'done', 'missed'];
+
+// Marks a topic pending/done/missed and, when the change warrants it, replans the remaining days.
+async function updateTopicStatus(req, res) {
+  const status = req.body && req.body.status;
+  if (!TOPIC_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${TOPIC_STATUSES.join(', ')}` });
+  }
+  const { topicId } = req.params;
+  if (!mongoose.isValidObjectId(topicId)) {
+    return res.status(404).json({ error: 'Topic not found' });
+  }
+  const topic = await Topic.findOne({ _id: topicId, planId: req.plan._id });
+  if (!topic) {
+    return res.status(404).json({ error: 'Topic not found' });
+  }
+
+  const oldStatus = topic.status;
+  const days = await ScheduleDay.find({ planId: req.plan._id });
+  const slotDates = days.filter((d) => d.slots.some((s) => s.topicId.equals(topic._id))).map((d) => d.date);
+  const decision = decideReplan({
+    oldStatus,
+    newStatus: status,
+    slotDates,
+    hasSchedule: days.length > 0,
+    today: startOfUtcDay(new Date()),
+  });
+
+  topic.status = status;
+  await topic.save();
+
+  let replan = null;
+  let explanation = null;
+  let explanationSource = null;
+  if (decision) {
+    replan = await replanRemaining(req.plan);
+    const change = {
+      topic: topic.name,
+      trigger: decision.trigger,
+      daysOffset: decision.daysOffset,
+      daysLeft: replan.daysLeft,
+      rescheduledTopics: replan.rescheduledTopics,
+      moves: replan.moves,
+      unscheduledTopics: replan.unscheduledTopicIds.length,
+    };
+    try {
+      explanation = await explainReplan(change);
+      explanationSource = 'ai';
+    } catch (err) {
+      // The explanation is a nicety: never fail a status update because the free LLM is busy.
+      if (!(err instanceof LlmError)) throw err;
+      explanation = fallbackExplanation(change);
+      explanationSource = 'fallback';
+    }
+  } else {
+    await syncDayCompletion(req.plan._id);
+  }
+
+  // Plan-level status: completed once nothing is left to do, active again if something is reopened.
+  const remaining = await Topic.countDocuments({ planId: req.plan._id, status: { $ne: 'done' } });
+  const planStatus = remaining === 0 ? 'completed' : req.plan.status === 'completed' ? 'active' : req.plan.status;
+  if (planStatus !== req.plan.status) {
+    req.plan.status = planStatus;
+    await req.plan.save();
+  }
+
+  return res.json({
+    topic,
+    replanned: Boolean(decision),
+    explanation,
+    explanationSource,
+    warning: replan ? replan.warning : null,
+    planStatus,
+  });
+}
+
 module.exports = {
   createPlan,
   listPlans,
@@ -195,4 +275,5 @@ module.exports = {
   extractPlanTopics,
   estimatePlanTopics,
   generatePlanSchedule,
+  updateTopicStatus,
 };

@@ -140,6 +140,15 @@ test('a persistent rate limit returns 503 with a friendly message', async () => 
   assert.equal(mock.calls.length, 2);
 });
 
+test('a daily-limit 429 is not retried and says so clearly', async () => {
+  const planId = await newPlan(alice);
+  mock = mockLlm([{ status: 429, text: '{"error":{"message":"Rate limit exceeded: free-models-per-day"}}' }]);
+  const res = await alice.request('POST', `/plans/${planId}/extract`);
+  assert.equal(res.status, 503);
+  assert.match(res.body.error, /daily request limit/i);
+  assert.equal(mock.calls.length, 1); // waiting a moment won't help, so no retry
+});
+
 test('a network failure is retried once, then reported as 502', async () => {
   const planId = await newPlan(alice);
   mock = mockLlm([new Error('socket hang up')]);

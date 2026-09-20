@@ -25,7 +25,7 @@ class BadOutputError extends Error {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function callModel(messages, maxTokens) {
+async function callModel(messages, maxTokens, timeoutMs) {
   const apiKey = (process.env.OPENROUTER_API_KEY || '').trim();
   const model = (process.env.LLM_MODEL || '').trim();
   if (!apiKey || !model) {
@@ -40,13 +40,21 @@ async function callModel(messages, maxTokens) {
       // These are short structured tasks: skip "thinking" (faster, and reasoning tokens can't eat max_tokens).
       // Models without a reasoning mode ignore the field.
       body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: maxTokens, reasoning: { enabled: false } }),
-      signal: AbortSignal.timeout(config.timeoutMs),
+      signal: AbortSignal.timeout(timeoutMs || config.timeoutMs),
     });
   } catch (err) {
     throw new LlmError('Could not reach the AI model. Please try again.', { status: 502, transient: true });
   }
 
   if (res.status === 429) {
+    // A per-day cap will not clear in a moment, so don't retry and don't say "try again shortly".
+    const body = await res.text().catch(() => '');
+    if (/per-day|daily/i.test(body)) {
+      throw new LlmError(
+        "The free AI model's daily request limit has been reached. Try again tomorrow, or set a different LLM_MODEL.",
+        { status: 503 }
+      );
+    }
     throw new LlmError('The free AI model is busy (rate limited). Please try again in a moment.', {
       status: 503,
       transient: true,
@@ -101,9 +109,10 @@ function parseJsonLoose(text, kind) {
  * Ask the model for JSON, parse it defensively and check its shape.
  *   kind:     'array' | 'object' - what top-level JSON we expect
  *   validate: (parsed) => cleanedValue; throws BadOutputError if the shape is wrong
+ *   timeoutMs: optional per-request timeout (default config.timeoutMs)
  * One retry on a transient failure or a bad reply; then throws an LlmError.
  */
-async function askForJson({ system, user, kind, validate, maxTokens = 4000 }) {
+async function askForJson({ system, user, kind, validate, maxTokens = 4000, timeoutMs }) {
   const messages = [
     { role: 'system', content: system },
     { role: 'user', content: user },
@@ -113,7 +122,7 @@ async function askForJson({ system, user, kind, validate, maxTokens = 4000 }) {
   for (let attempt = 0; attempt < 2; attempt++) {
     let text = '';
     try {
-      text = await callModel(messages, maxTokens);
+      text = await callModel(messages, maxTokens, timeoutMs);
       return validate(parseJsonLoose(text, kind));
     } catch (err) {
       const retryable = err instanceof BadOutputError || (err instanceof LlmError && err.transient);
